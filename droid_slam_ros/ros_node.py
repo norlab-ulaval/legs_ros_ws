@@ -51,14 +51,74 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 class DroidNode(Node):
-    def __init__(self, args):
+    def __init__(self):
         super().__init__('droid_node')
         
-        self.args = args
-        self.args.weights = "/home/mbo/legs_ws/install/droid_slam_ros/share/droid_slam_ros/droid.pth" # TODO replace with ROS param
+        # Declare parameters
+        self.declare_parameter('weights', '')
+        self.declare_parameter('image_size', [344, 560])
+        self.declare_parameter('disable_vis', False)
+        self.declare_parameter('buffer', 512)
+        self.declare_parameter('upsample', True)
+        self.declare_parameter('t0', 0)
+        self.declare_parameter('stride', 1)
+        self.declare_parameter('beta', 0.3)
+        self.declare_parameter('filter_thresh', 2.0)
+        self.declare_parameter('warmup', 4)
+        self.declare_parameter('keyframe_thresh', 4.0)
+        self.declare_parameter('frontend_thresh', 16.0)
+        self.declare_parameter('frontend_window', 50)
+        self.declare_parameter('frontend_radius', 2)
+        self.declare_parameter('frontend_nms', 1)
+        self.declare_parameter('backend_thresh', 22.0)
+        self.declare_parameter('backend_radius', 2)
+        self.declare_parameter('backend_nms', 3)
+        self.declare_parameter('reconstruction_path', '')
+        self.declare_parameter('datapath', '/tmp')
 
-        self.args.image_size = [344, 560] # TODO replace with ROS param
-        self.args.upsample = True
+        # Create args object to mimic argparse namespace
+        class DroidArgs:
+            pass
+        self.args = DroidArgs()
+
+        # Retrieve parameters
+        weights = self.get_parameter('weights').get_parameter_value().string_value
+        if not weights:
+            try:
+                weights = os.path.join(get_package_share_directory('droid_slam_ros'), 'droid.pth')
+            except Exception:
+                weights = "droid.pth"
+        
+        self.args.weights = weights
+        self.args.image_size = self.get_parameter('image_size').get_parameter_value().integer_array_value
+        if hasattr(self.args.image_size, 'tolist'):
+             self.args.image_size = self.args.image_size.tolist()
+        
+        # If empty (shouldn't be due to default), fallback
+        if not self.args.image_size:
+            self.args.image_size = [344, 560]
+
+        self.args.disable_vis = self.get_parameter('disable_vis').get_parameter_value().bool_value
+        self.args.buffer = self.get_parameter('buffer').get_parameter_value().integer_value
+        self.args.upsample = self.get_parameter('upsample').get_parameter_value().bool_value
+        self.args.t0 = self.get_parameter('t0').get_parameter_value().integer_value
+        self.args.stride = self.get_parameter('stride').get_parameter_value().integer_value
+        self.args.beta = self.get_parameter('beta').get_parameter_value().double_value
+        self.args.filter_thresh = self.get_parameter('filter_thresh').get_parameter_value().double_value
+        self.args.warmup = self.get_parameter('warmup').get_parameter_value().integer_value
+        self.args.keyframe_thresh = self.get_parameter('keyframe_thresh').get_parameter_value().double_value
+        self.args.frontend_thresh = self.get_parameter('frontend_thresh').get_parameter_value().double_value
+        self.args.frontend_window = self.get_parameter('frontend_window').get_parameter_value().integer_value
+        self.args.frontend_radius = self.get_parameter('frontend_radius').get_parameter_value().integer_value
+        self.args.frontend_nms = self.get_parameter('frontend_nms').get_parameter_value().integer_value
+        self.args.backend_thresh = self.get_parameter('backend_thresh').get_parameter_value().double_value
+        self.args.backend_radius = self.get_parameter('backend_radius').get_parameter_value().integer_value
+        self.args.backend_nms = self.get_parameter('backend_nms').get_parameter_value().integer_value
+        self.args.reconstruction_path = self.get_parameter('reconstruction_path').get_parameter_value().string_value
+        self.args.datapath = self.get_parameter('datapath').get_parameter_value().string_value
+        
+        self.args.stereo = True
+        
         self.droid = Droid(self.args)
 
         self.cam_transform = np.diag([1, -1, -1, 1])
@@ -106,6 +166,8 @@ class DroidNode(Node):
         }
         self.frames = []
         self.cam_params["left"] = params
+        # TODO log here
+        self.get_logger().info("Received Left Camera Info", once=True)
 
     def cam_intr_right_cb(self, msg):
         if 'w' in self.cam_params:
@@ -119,6 +181,8 @@ class DroidNode(Node):
             "D": np.array(msg.d),
         }
         self.cam_params["right"] = params
+        # TODO log here
+        self.get_logger().info("Received Right Camera Info", once=True)
 
     def xyzquat2mat(self, vec):
         xyz = vec[:3]
@@ -131,6 +195,7 @@ class DroidNode(Node):
         return matrix
 
     def image_callback(self, left_msg, right_msg):
+        start_time = time.time()
         # Get baseline from TF if not already set
         if self.baseline is None:
             try:
@@ -140,25 +205,23 @@ class DroidNode(Node):
                 # Wait, DroidSLAM expects stereo pairs. We need the intrinsics [fx, fy, cx, cy]
                 # and usually assumes rectified stereo with horizontal baseline.
                 self.baseline = abs(trans.transform.translation.x) 
-                print(f"Baseline found: {self.baseline}")
+                self.get_logger().info(f"Baseline found: {self.baseline}")
             except Exception as e:
-                print(f"Could not get baseline: {e}")
+                self.get_logger().error(f"Could not get baseline: {e}")
                 return
 
         if self.cam_params.get("left") is None or self.cam_params.get("right") is None:
-            print("Waiting for camera info")
+            self.get_logger().info("Waiting for camera info", once=True)
             return
 
         # Convert ROS Image messages to OpenCV images
         cv_left = self.bridge.imgmsg_to_cv2(left_msg, desired_encoding='bgr8')
         cv_right = self.bridge.imgmsg_to_cv2(right_msg, desired_encoding='bgr8')
         
-        print(cv_left.shape, cv_right.shape)
         t = left_msg.header.stamp.sec + left_msg.header.stamp.nanosec * 1e-9
 
         # Undistort images
 
-        print(self.cam_params['left']['D'])
         cv_left = cv2.undistort(cv_left, self.cam_params['left']['K'], self.cam_params['left']['D'])
         cv_right = cv2.undistort(cv_right, self.cam_params['right']['K'], self.cam_params['right']['D'])
 
@@ -176,7 +239,6 @@ class DroidNode(Node):
         image_left_tensor = torch.as_tensor(cv_left).permute(2, 0, 1)
         image_right_tensor = torch.as_tensor(cv_right).permute(2, 0, 1)
 
-        print(image_right_tensor.shape, image_left_tensor.shape)
         
         stereo_image = torch.stack([image_left_tensor, image_right_tensor])
 
@@ -189,7 +251,6 @@ class DroidNode(Node):
         intrinsics[1::2] *= (h1 / h0)
 
 
-        print(stereo_image.shape)
 
         self.droid.track(t, stereo_image, depth=None, intrinsics=intrinsics)
 
@@ -222,7 +283,10 @@ class DroidNode(Node):
         PILImage.fromarray(image_left_tensor.squeeze().cpu().permute(1, 2, 0).numpy()[:, :, ::-1].astype(np.uint8)).save(filename)
         frame_dat = {'transform_matrix': posemat[:3, :].tolist(), 'file_path': filename}
         self.frames.append(frame_dat)
-        print(f"Processed frame {self.image_counter}")
+
+        # TODO log here the time it took to process the frame
+        process_time = time.time() - start_time
+        self.get_logger().info(f"Processed frame {self.image_counter} in {process_time:.4f}s")
 
     def save_reconstruction(self, save_path):
         if hasattr(self.droid, "video2"):
@@ -240,17 +304,17 @@ class DroidNode(Node):
         }
 
         torch.save(save_data, save_path)
-        print(f"Saved .pth to {save_path}")
+        self.get_logger().info(f"Saved .pth to {save_path}")
 
     def shutdown(self):
-        print("Starting reconstruction save...")
+        self.get_logger().info("Starting reconstruction save...")
         if self.droid is None:
             return
 
         # terminate droid
         del self.droid.frontend
         # Global Bundle Adjustment
-        print("Performing Global BA...")
+        self.get_logger().info("Performing Global BA...")
         torch.cuda.empty_cache()
         self.droid.backend(7)
 
@@ -264,7 +328,7 @@ class DroidNode(Node):
         
         # Save Trajectory (TUM Format)
         traj_path = os.path.join(self.output_folder_, 'stamped_traj_estimate.txt')
-        print(f"Saving trajectory to {traj_path}...")
+        self.get_logger().info(f"Saving trajectory to {traj_path}...")
         with open(traj_path, 'w') as f:
             for i in range(len(poses)):
                 # pose is [tx, ty, tz, qx, qy, qz, qw]
@@ -273,7 +337,7 @@ class DroidNode(Node):
                 f.write(f"{timestamp} {p[0]} {p[1]} {p[2]} {p[3]} {p[4]} {p[5]} {p[6]}\n")
 
         # Save transforms.json (updated with optimized poses)
-        print("Saving transforms.json...")
+        self.get_logger().info("Saving transforms.json...")
         self.frames = []
         for i in range(len(poses)):
             # Need to re-compute matrix from optimized pose
@@ -292,48 +356,19 @@ class DroidNode(Node):
         # # TODO Save .ply
         # ply_path = os.path.join(self.output_folder_, 'reconstruction.ply')
 
-        print("Save complete.")
+        self.get_logger().info("Save complete.")
 
 
 def main(mainargs=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--t0", default=0, type=int, help="starting frame")
-    parser.add_argument("--stride", default=1, type=int, help="frame stride")
-
-    parser.add_argument("--weights", default="droid.pth")
-    parser.add_argument("--buffer", type=int, default=512)
-    parser.add_argument("--image_size", default=[240, 320])
-    parser.add_argument("--disable_vis", action="store_true")
-
-    parser.add_argument("--beta", type=float, default=0.3, help="weight for translation / rotation components of flow")
-    parser.add_argument("--filter_thresh", type=float, default=2, help="how much motion before considering new keyframe")
-    parser.add_argument("--warmup", type=int, default=4, help="number of warmup frames")
-    parser.add_argument("--keyframe_thresh", type=float, default=3, help="threshold to create a new keyframe")
-    parser.add_argument("--frontend_thresh", type=float, default=16.0, help="add edges between frames whithin this distance")
-    parser.add_argument("--frontend_window", type=int, default=50, help="frontend optimization window")
-    parser.add_argument("--frontend_radius", type=int, default=2, help="force edges between frames within radius")
-    parser.add_argument("--frontend_nms", type=int, default=1, help="non-maximal supression of edges")
-
-    parser.add_argument("--backend_thresh", type=float, default=22.0)
-    parser.add_argument("--backend_radius", type=int, default=2)
-    parser.add_argument("--backend_nms", type=int, default=3)
-    parser.add_argument("--upsample", action="store_true")
-    parser.add_argument("--reconstruction_path", help="path to saved reconstruction")
-    parser.add_argument("--datapath", default="/tmp", help="This should be ignored")
-    args = parser.parse_args()
-    
-    # Enable Stereo
-    args.stereo = True
-
     torch.multiprocessing.set_start_method('spawn')
     rclpy.init(args=mainargs)
 
-    node = DroidNode(args)
+    node = DroidNode()
     try:
         rclpy.spin(node)  # Keep the node alive
     except KeyboardInterrupt:
         node.shutdown()
-        print("Exiting...")
+        node.get_logger().info("Exiting...")
     node.destroy_node()
     rclpy.shutdown()
 
