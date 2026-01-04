@@ -3,7 +3,6 @@
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
 from geometry_msgs.msg import Pose, Point, Quaternion
 from nav_msgs.msg import Odometry
-from lifelong_msgs.msg import ImagePose  # Make sure to import your custom ImagePose message
 from rclpy.node import Node
 from cv_bridge import CvBridge  # Needed for converting between ROS Image messages and OpenCV images
 import sys
@@ -59,6 +58,7 @@ class DroidNode(Node):
         self.args.weights = "/home/mbo/legs_ws/install/droid_slam_ros/share/droid_slam_ros/droid.pth" # TODO replace with ROS param
 
         self.args.image_size = [344, 560] # TODO replace with ROS param
+        self.args.upsample = True
         self.droid = Droid(self.args)
 
         self.cam_transform = np.diag([1, -1, -1, 1])
@@ -68,7 +68,6 @@ class DroidNode(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Initialize ROS2 Publisher and Subscriber
-        self.publisher = self.create_publisher(ImagePose, '/camera/color/imagepose', 10)
         self.odom_publisher = self.create_publisher(Odometry, 'estimated_odom', 10)
         
         # Subscriptions
