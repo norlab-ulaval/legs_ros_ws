@@ -1,95 +1,127 @@
 #!/usr/bin/env python3
-# DUMMY ROS NODE TO TEST DROID SLAM ROS INTEGRATION
-from sensor_msgs.msg import Image, CompressedImage,CameraInfo
-from geometry_msgs.msg import Pose,Point,Quaternion
+
+from sensor_msgs.msg import Image, CompressedImage, CameraInfo
+from geometry_msgs.msg import Pose, Point, Quaternion
+from nav_msgs.msg import Odometry
 from lifelong_msgs.msg import ImagePose  # Make sure to import your custom ImagePose message
 from rclpy.node import Node
 from cv_bridge import CvBridge  # Needed for converting between ROS Image messages and OpenCV images
 import sys
 from scipy.spatial.transform import Rotation as R
-sys.path.append('droid_slam')
-from PIL import Image
+import os
+from ament_index_python.packages import get_package_share_directory
+
+# Add droid_slam to path
+try:
+    share_dir = get_package_share_directory('droid_slam_ros')
+    sys.path.append(share_dir)
+    sys.path.append(os.path.join(share_dir, 'droid_slam'))
+except Exception as e:
+    print(f"Could not find share directory: {e}")
+    sys.path.append('droid_slam') # Fallback for local run
+
+from PIL import Image as PILImage
 
 from tqdm import tqdm
 import numpy as np
 import torch
 import lietorch
 import cv2
-import os
-import glob 
+import glob
 import time
 import argparse
 import rclpy
 import json
 from sensor_msgs.msg import Image as ROSImage
-#Test
-from torch.multiprocessing import Process
-import pdb
-pdb.set_trace()
-from droid import Droid
 import message_filters
-
+from droid import Droid
 import torch.nn.functional as F
+
+import tf2_ros
+from tf2_geometry_msgs import do_transform_pose
+import droid_backends
+from lietorch import SE3
+import geom.projective_ops as pops
+
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
 
 
 class DroidNode(Node):
     def __init__(self, args):
         super().__init__('droid_node')
-        self.droid = None
+        
         self.args = args
-        self.cam_transform = np.diag([1, -1, -1, 1])
-        # Initialize ROS2 Publisher and Subscriber
-        self.publisher = self.create_publisher(ImagePose, '/camera/color/imagepose',10)
-        self.realsense_publisher = self.create_publisher(ImagePose, '/sim_realsense',20)
-        # self.realsense_subscriber = self.create_subscription(
-        #     ImagePose,
-        #     '/sim_realsense',
-        #     self.listener_callback,
-        #     10)
-        self.rgb_sub = message_filters.Subscriber(self,
-            CompressedImage,
-            '/camera/color/image_raw/compressed')
-        self.intr_sub = self.create_subscription(CameraInfo,'/camera/color/camera_info',self.cam_intr_cb,1)
-        self.sim_realsense_sub = self.create_subscription(ImagePose,'/sim_realsense',self.sim_realsense_callback,10)
-        self.depth_sub = message_filters.Subscriber(self,ROSImage,'/camera/depth/image_rect_raw')
+        self.args.weights = "/home/mbo/legs_ws/install/droid_slam_ros/share/droid_slam_ros/droid.pth" # TODO replace with ROS param
 
-        self.ts = message_filters.ApproximateTimeSynchronizer([self.rgb_sub, self.depth_sub], 20, 0.1)
+        self.args.image_size = [344, 560] # TODO replace with ROS param
+        self.droid = Droid(self.args)
+
+        self.cam_transform = np.diag([1, -1, -1, 1])
+        
+        # Initialize TF2 Buffer and Listener
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # Initialize ROS2 Publisher and Subscriber
+        self.publisher = self.create_publisher(ImagePose, '/camera/color/imagepose', 10)
+        self.odom_publisher = self.create_publisher(Odometry, 'estimated_odom', 10)
+        
+        # Subscriptions
+        # Use absolute paths for input topics to ignore node namespace
+        self.left_rect_sub = message_filters.Subscriber(self, ROSImage, '/zedx/left/image_rect')
+        self.right_rect_sub = message_filters.Subscriber(self, ROSImage, '/zedx/right/image_rect')
+        
+        # Exact Time Sync for stereo pairs
+        self.ts = message_filters.TimeSynchronizer([self.left_rect_sub, self.right_rect_sub], 10)
         self.ts.registerCallback(self.image_callback)
+        
+        # TODO add right camera info subscription
+        self.intr_sub_left = self.create_subscription(CameraInfo, '/zedx/left/camera_info', self.cam_intr_left_cb, 1)
+        self.intr_sub_right = self.create_subscription(CameraInfo, '/zedx/right/camera_info', self.cam_intr_right_cb, 1)
 
         self.image_counter = 0
-        self.output_folder_ = 'output_images'
-        self.json_file_path_ = os.path.join(self.output_folder_,'transforms.json')
+        self.output_folder_ = '/home/mbo/legs_ws/output_images'
+        self.json_file_path_ = os.path.join(self.output_folder_, 'transforms.json')
         if not os.path.exists(self.output_folder_):
-            # Create the directory
-            os.makedirs(self.output_folder_)
-        self.cam_params = {
+            os.makedirs(self.output_folder_)            
 
-        }
+        self.cam_params = {}
         self.bridge = CvBridge()
+        self.baseline = None
 
-    def cam_intr_cb(self,msg):
+    def cam_intr_left_cb(self, msg):
         if 'w' in self.cam_params:
             return
-        k1 = msg.d[0]
-        k2 = msg.d[1]
-        k3 = msg.d[4]
-        K = msg.k.reshape(3,3)
+
+        K = msg.k.reshape(3, 3)
         params = {
             "w": msg.width,
             "h": msg.height,
-            "fl_x": K[0,0],
-            "fl_y": K[1,1],
-            "cx": K[0,2],
-            "cy": K[1,2],
-            "k1": k1,
-            "k2": k2,
-            "k3": k3,
-            "camera_model": "OPENCV",
+            "K": K,
+            "D": np.array(msg.d),
         }
         self.frames = []
-        self.cam_params |= params
+        self.cam_params["left"] = params
 
-    def xyzquat2mat(self,vec):
+    def cam_intr_right_cb(self, msg):
+        if 'w' in self.cam_params:
+            return
+
+        K = msg.k.reshape(3, 3)
+        params = {
+            "w": msg.width,
+            "h": msg.height,
+            "K": K,
+            "D": np.array(msg.d),
+        }
+        self.cam_params["right"] = params
+
+    def xyzquat2mat(self, vec):
         xyz = vec[:3]
         quat = vec[3:]
         matrix = np.eye(4)
@@ -99,147 +131,173 @@ class DroidNode(Node):
         matrix = np.linalg.inv(matrix) @ self.cam_transform
         return matrix
 
-    def sim_realsense_callback(self,msg):
-        print("sim realsense callback",self.image_counter)
-        cv_image = self.bridge.imgmsg_to_cv2(msg.img, desired_encoding='bgr8')  # Convert ROS Image message to OpenCV image
-        depth_image = self.bridge.imgmsg_to_cv2(msg.depth,desired_encoding='16UC1')
-        if 'cx' not in self.cam_params:
-            print("Not recieved intr yet, skipping frame")
-            return
-        t = msg.img.header.stamp.sec  # Current ROS time
-        depth_tensor = torch.from_numpy(depth_image.astype(np.int32)).float() * .001 #one mm per unit, convert to meters
-        # Replace this part with how you get your intrinsics
-        intrinsics = torch.as_tensor([self.cam_params['fl_x'],self.cam_params['fl_y'],self.cam_params['cx'],self.cam_params['cy']])
+    def image_callback(self, left_msg, right_msg):
+        # Get baseline from TF if not already set
+        if self.baseline is None:
+            try:
+                trans = self.tf_buffer.lookup_transform('zedx_left', 'zedx_right', rclpy.time.Time())
+                # Baseline is typically the Euclidean distance, mainly along -x in camera frame for right cam
+                # But here we just need the magnitude if we are converting disparity/stereo
+                # Wait, DroidSLAM expects stereo pairs. We need the intrinsics [fx, fy, cx, cy]
+                # and usually assumes rectified stereo with horizontal baseline.
+                self.baseline = abs(trans.transform.translation.x) 
+                print(f"Baseline found: {self.baseline}")
+            except Exception as e:
+                print(f"Could not get baseline: {e}")
+                return
 
-        if self.droid is None:
-            self.args.image_size = [cv_image.shape[0], cv_image.shape[1]]
-            print('img size',self.args.image_size)
-            self.droid = Droid(self.args)
-        
-        image_tensor = torch.as_tensor(cv_image).permute(2, 0, 1)
-        # import pdb; pdb.set_trace()
-        # print(image_tensor.shape)
-        # print(depth_tensor.shape)
-        # only add the first 3 depth images to get a scene scale, then ignore them since it messes
-        # up tracking sometimes
-        if self.image_counter>3:
-            depth=None
-        else:
-            depth=depth_tensor[:,:]
-        self.droid.track(t, image_tensor[None, :, :, :],depth, intrinsics=intrinsics)
-        #visualize the image with cv2
-        if(self.droid.video.counter.value == self.image_counter):
+        if self.cam_params.get("left") is None or self.cam_params.get("right") is None:
+            print("Waiting for camera info")
             return
-        #imshow the cv_image
-        cv2.imshow("Image window", cv_image)
-        cv2.waitKey(3)
+
+        # Convert ROS Image messages to OpenCV images
+        cv_left = self.bridge.imgmsg_to_cv2(left_msg, desired_encoding='bgr8')
+        cv_right = self.bridge.imgmsg_to_cv2(right_msg, desired_encoding='bgr8')
+        
+        print(cv_left.shape, cv_right.shape)
+        t = left_msg.header.stamp.sec + left_msg.header.stamp.nanosec * 1e-9
+
+        # Undistort images
+
+        print(self.cam_params['left']['D'])
+        cv_left = cv2.undistort(cv_left, self.cam_params['left']['K'], self.cam_params['left']['D'])
+        cv_right = cv2.undistort(cv_right, self.cam_params['right']['K'], self.cam_params['right']['D'])
+
+        # Prepare inputs for Droid
+
+        h0, w0, _ = cv_left.shape
+        h1 = int(h0 * np.sqrt((384 * 512) / (h0 * w0)))
+        w1 = int(w0 * np.sqrt((384 * 512) / (h0 * w0)))
+
+        cv_left = cv2.resize(cv_left, (w1, h1))
+        cv_left = cv_left[:h1-h1%8, :w1-w1%8]
+        cv_right = cv2.resize(cv_right, (w1, h1))
+        cv_right = cv_right[:h1-h1%8, :w1-w1%8]
+
+        image_left_tensor = torch.as_tensor(cv_left).permute(2, 0, 1)
+        image_right_tensor = torch.as_tensor(cv_right).permute(2, 0, 1)
+
+        print(image_right_tensor.shape, image_left_tensor.shape)
+        
+        stereo_image = torch.stack([image_left_tensor, image_right_tensor])
+
+        K_l = self.cam_params['left']['K']
+        fx, fy, cx, cy = K_l[0,0], K_l[1,1], K_l[0,2], K_l[1,2]
+        intrinsics = torch.as_tensor([
+            fx, fy, cx, cy
+        ])
+        intrinsics[0::2] *= (w1 / w0)
+        intrinsics[1::2] *= (h1 / h0)
+
+
+        print(stereo_image.shape)
+
+        self.droid.track(t, stereo_image, depth=None, intrinsics=intrinsics)
+
+        if self.droid.video.counter.value == self.image_counter:
+            return
+
         self.image_counter += 1
-        pose = self.droid.video.poses[self.droid.video.counter.value-1].cpu().numpy()
-        print("Adding droid keyframe...")
-        image_pose_msg = ImagePose()
-        image_pose_msg.img = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
-        image_pose_msg.depth = self.bridge.cv2_to_imgmsg(depth_image,encoding="16UC1")
-        image_pose_msg.w = self.cam_params['w']
-        image_pose_msg.h = self.cam_params['h']
-        image_pose_msg.fl_x = self.cam_params['fl_x']
-        image_pose_msg.fl_y = self.cam_params['fl_y']
-        image_pose_msg.cx = self.cam_params['cx']
-        image_pose_msg.cy = self.cam_params['cy']
-        image_pose_msg.k1 = self.cam_params['k1']
-        image_pose_msg.k2 = self.cam_params['k2']
-        image_pose_msg.k3 = self.cam_params['k3']
+        
+        # Get latest pose
+        pose = self.droid.video.poses[self.droid.video.counter.value - 1].cpu().numpy()
         posemat = self.xyzquat2mat(pose)
-        pose = posemat[:3,3]
-        print("xyz pose droidslam: ", pose)
-        orient = R.from_matrix(posemat[:3,:3]).as_quat()
-        image_pose_msg.pose = Pose(position=Point(x=pose[0],y=pose[1],z=pose[2]),orientation=Quaternion(x=orient[0],y=orient[1],z=orient[2],w=orient[3]))  # Replace with your Pose message
+        pos_xyz = posemat[:3, 3]
+        orient = R.from_matrix(posemat[:3, :3]).as_quat()
+
+        pose = Pose(
+            position=Point(x=pos_xyz[0], y=pos_xyz[1], z=pos_xyz[2]),
+            orientation=Quaternion(x=orient[0], y=orient[1], z=orient[2], w=orient[3])
+        )
         
-        self.publisher.publish(image_pose_msg)
+        # Publish Odometry
+        odom_msg = Odometry()
+        odom_msg.header = left_msg.header
+        odom_msg.header.frame_id = "map" # or "odom"
+        odom_msg.child_frame_id = "zedx_left" # or camera frame
+        odom_msg.pose.pose = pose
+        self.odom_publisher.publish(odom_msg)
+
+        # Save for transforms.json
         filename = f"{self.output_folder_}/image{self.image_counter:06d}.jpg"
-        Image.fromarray(image_tensor.squeeze().cpu().permute(1,2,0).numpy()[:,:,::-1].astype(np.uint8)).save(filename)
-        frame_dat = {'transform_matrix':posemat[:3,:].tolist(),'file_path':filename}
-        self.frames.append(frame_dat)        
-
-    def image_callback(self, img_msg,depth_msg):
-        realsense_sim_msg = ImagePose()
-        cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg, desired_encoding='bgr8')  # Convert ROS Image message to OpenCV image
-        cv_img_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
-        realsense_sim_msg.img = cv_img_msg
-        realsense_sim_msg.depth = depth_msg
-        self.realsense_publisher.publish(realsense_sim_msg)
-        return
-        if 'cx' not in self.cam_params:
-            print("Not recieved intr yet, skipping frame")
-            return
-        t = img_msg.header.stamp.sec  # Current ROS time
-        cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg, desired_encoding='bgr8')  # Convert ROS Image message to OpenCV image
-        depth_image = self.bridge.imgmsg_to_cv2(depth_msg,desired_encoding='16UC1')
-        realsense_sim_msg = ImagePose()
-        realsense_sim_msg.img = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
-        realsense_sim_msg.depth = self.bridge.cv2_to_imgmsg(depth_image,encoding="16UC1")
-        self.realsense_publisher.publish(realsense_sim_msg)
-        depth_tensor = torch.from_numpy(depth_image.astype(np.int32)).float() * .001 #one mm per unit, convert to meters
-        # Replace this part with how you get your intrinsics
-        intrinsics = torch.as_tensor([self.cam_params['fl_x'],self.cam_params['fl_y'],self.cam_params['cx'],self.cam_params['cy']])
-
-        if self.droid is None:
-            self.args.image_size = [cv_image.shape[0], cv_image.shape[1]]
-            print('img size',self.args.image_size)
-            self.droid = Droid(self.args)
-        
-        image_tensor = torch.as_tensor(cv_image).permute(2, 0, 1)
-        # import pdb; pdb.set_trace()
-        # print(image_tensor.shape)
-        # print(depth_tensor.shape)
-        # only add the first 3 depth images to get a scene scale, then ignore them since it messes
-        # up tracking sometimes
-        if self.image_counter>3:
-            depth=None
-        else:
-            depth=depth_tensor[:,:]
-        self.droid.track(t, image_tensor[None, :, :, :],depth, intrinsics=intrinsics)
-
-        if(self.droid.video.counter.value == self.image_counter):
-            return
-        self.image_counter += 1
-        pose = self.droid.video.poses[self.droid.video.counter.value-1].cpu().numpy()
-        print("Adding droid keyframe...")
-        image_pose_msg = ImagePose()
-        image_pose_msg.img = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
-        image_pose_msg.depth = self.bridge.cv2_to_imgmsg(depth_image,encoding="16UC1")
-        self.realsense_publisher.publish(image_pose_msg)
-        image_pose_msg.w = self.cam_params['w']
-        image_pose_msg.h = self.cam_params['h']
-        image_pose_msg.fl_x = self.cam_params['fl_x']
-        image_pose_msg.fl_y = self.cam_params['fl_y']
-        image_pose_msg.cx = self.cam_params['cx']
-        image_pose_msg.cy = self.cam_params['cy']
-        image_pose_msg.k1 = self.cam_params['k1']
-        image_pose_msg.k2 = self.cam_params['k2']
-        image_pose_msg.k3 = self.cam_params['k3']
-        posemat = self.xyzquat2mat(pose)
-        pose = posemat[:3,3]
-        print("xyz pose droidslam: ", pose)
-        orient = R.from_matrix(posemat[:3,:3]).as_quat()
-        image_pose_msg.pose = Pose(position=Point(x=pose[0],y=pose[1],z=pose[2]),orientation=Quaternion(x=orient[0],y=orient[1],z=orient[2],w=orient[3]))  # Replace with your Pose message
-        
-        self.publisher.publish(image_pose_msg)
-        filename = f"{self.output_folder_}/image{self.image_counter:06d}.jpg"
-        Image.fromarray(image_tensor.squeeze().cpu().permute(1,2,0).numpy()[:,:,::-1].astype(np.uint8)).save(filename)
-        frame_dat = {'transform_matrix':posemat[:3,:].tolist(),'file_path':filename}
+        PILImage.fromarray(image_left_tensor.squeeze().cpu().permute(1, 2, 0).numpy()[:, :, ::-1].astype(np.uint8)).save(filename)
+        frame_dat = {'transform_matrix': posemat[:3, :].tolist(), 'file_path': filename}
         self.frames.append(frame_dat)
+        print(f"Processed frame {self.image_counter}")
 
-    def saveJSON(self):
-        print("In here")
-        self.cam_params['frames']=self.frames
-        with open(self.json_file_path_,"w") as json_file:
-            json.dump(self.cam_params,json_file)
-        print("Outta here")
+    def save_reconstruction(self, save_path):
+        if hasattr(self.droid, "video2"):
+            video = self.droid.video2
+        else:
+            video = self.droid.video
+
+        t = video.counter.value
+        save_data = {
+            "tstamps": video.tstamp[:t].cpu(),
+            "images": video.images[:t].cpu(),
+            "disps": video.disps_up[:t].cpu(),
+            "poses": video.poses[:t].cpu(),
+            "intrinsics": video.intrinsics[:t].cpu()
+        }
+
+        torch.save(save_data, save_path)
+        print(f"Saved .pth to {save_path}")
+
+    def shutdown(self):
+        print("Starting reconstruction save...")
+        if self.droid is None:
+            return
+
+        # terminate droid
+        del self.droid.frontend
+        # Global Bundle Adjustment
+        print("Performing Global BA...")
+        torch.cuda.empty_cache()
+        self.droid.backend(7)
+
+        torch.cuda.empty_cache()
+        self.droid.backend(12)
+        
+        # Update poses
+        video = self.droid.video
+        poses = video.poses[:video.counter.value].cpu().numpy()
+        tstamps = video.tstamp[:video.counter.value].cpu().numpy()
+        
+        # Save Trajectory (TUM Format)
+        traj_path = os.path.join(self.output_folder_, 'stamped_traj_estimate.txt')
+        print(f"Saving trajectory to {traj_path}...")
+        with open(traj_path, 'w') as f:
+            for i in range(len(poses)):
+                # pose is [tx, ty, tz, qx, qy, qz, qw]
+                p = poses[i]
+                timestamp = tstamps[i]
+                f.write(f"{timestamp} {p[0]} {p[1]} {p[2]} {p[3]} {p[4]} {p[5]} {p[6]}\n")
+
+        # Save transforms.json (updated with optimized poses)
+        print("Saving transforms.json...")
+        self.frames = []
+        for i in range(len(poses)):
+            # Need to re-compute matrix from optimized pose
+            posemat = self.xyzquat2mat(poses[i])
+            filename = f"{self.output_folder_}/image{i+1:06d}.jpg" # Approximation of filename
+            frame_dat = {'transform_matrix': posemat[:3, :].tolist(), 'file_path': filename}
+            self.frames.append(frame_dat)
+            
+        self.cam_params['frames'] = self.frames
+        with open(self.json_file_path_, "w") as json_file:
+            json.dump(self.cam_params, json_file, cls=NumpyEncoder, indent=4)
+
+        # Save .pth
+        self.save_reconstruction(os.path.join(self.output_folder_, 'reconstruction.pth'))
+
+        # # TODO Save .ply
+        # ply_path = os.path.join(self.output_folder_, 'reconstruction.ply')
+
+        print("Save complete.")
+
 
 def main(mainargs=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--imagedir",type=str, help="path to image directory")
-    parser.add_argument("--calib", type=str, help="path to calibration file")
     parser.add_argument("--t0", default=0, type=int, help="starting frame")
     parser.add_argument("--stride", default=1, type=int, help="frame stride")
 
@@ -262,19 +320,20 @@ def main(mainargs=None):
     parser.add_argument("--backend_nms", type=int, default=3)
     parser.add_argument("--upsample", action="store_true")
     parser.add_argument("--reconstruction_path", help="path to saved reconstruction")
+    parser.add_argument("--datapath", default="/tmp", help="This should be ignored")
     args = parser.parse_args()
-    args.stereo = False
+    
+    # Enable Stereo
+    args.stereo = True
 
     torch.multiprocessing.set_start_method('spawn')
     rclpy.init(args=mainargs)
 
-    # Parse the arguments as before
-    # ...
     node = DroidNode(args)
     try:
         rclpy.spin(node)  # Keep the node alive
     except KeyboardInterrupt:
-        node.saveJSON()
+        node.shutdown()
         print("Exiting...")
     node.destroy_node()
     rclpy.shutdown()

@@ -26,17 +26,6 @@ setup(
                     '-gencode=arch=compute_86,code=sm_86',
                 ]
             }),
-    ],
-    cmdclass={ 'build_ext' : BuildExtension }
-)
-
-setup(
-    name='lietorch',
-    version='0.2',
-    description='Lie Groups for PyTorch',
-    packages=['lietorch'],
-    package_dir={'': 'thirdparty/lietorch'},
-    ext_modules=[
         CUDAExtension('lietorch_backends', 
             include_dirs=[
                 osp.join(ROOT, 'thirdparty/lietorch/lietorch/include'), 

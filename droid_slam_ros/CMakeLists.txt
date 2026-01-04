@@ -23,6 +23,11 @@ install(PROGRAMS
 )
 
 install(PROGRAMS
+  ros_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
   scripts/space_bundle_adjust_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
