@@ -278,12 +278,6 @@ class DroidNode(Node):
         odom_msg.pose.pose = pose
         self.odom_publisher.publish(odom_msg)
 
-        # Save for transforms.json
-        filename = f"{self.output_folder_}/image{self.image_counter:06d}.jpg"
-        PILImage.fromarray(image_left_tensor.squeeze().cpu().permute(1, 2, 0).numpy()[:, :, ::-1].astype(np.uint8)).save(filename)
-        frame_dat = {'transform_matrix': posemat[:3, :].tolist(), 'file_path': filename}
-        self.frames.append(frame_dat)
-
         # TODO log here the time it took to process the frame
         process_time = time.time() - start_time
         self.get_logger().info(f"Processed frame {self.image_counter} in {process_time:.4f}s")
@@ -335,20 +329,7 @@ class DroidNode(Node):
                 p = poses[i]
                 timestamp = tstamps[i]
                 f.write(f"{timestamp} {p[0]} {p[1]} {p[2]} {p[3]} {p[4]} {p[5]} {p[6]}\n")
-
-        # Save transforms.json (updated with optimized poses)
-        self.get_logger().info("Saving transforms.json...")
-        self.frames = []
-        for i in range(len(poses)):
-            # Need to re-compute matrix from optimized pose
-            posemat = self.xyzquat2mat(poses[i])
-            filename = f"{self.output_folder_}/image{i+1:06d}.jpg" # Approximation of filename
-            frame_dat = {'transform_matrix': posemat[:3, :].tolist(), 'file_path': filename}
-            self.frames.append(frame_dat)
-            
-        self.cam_params['frames'] = self.frames
-        with open(self.json_file_path_, "w") as json_file:
-            json.dump(self.cam_params, json_file, cls=NumpyEncoder, indent=4)
+        
 
         # Save .pth
         self.save_reconstruction(os.path.join(self.output_folder_, 'reconstruction.pth'))
