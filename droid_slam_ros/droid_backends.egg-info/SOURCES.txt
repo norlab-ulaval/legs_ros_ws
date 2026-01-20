@@ -9,3 +9,6 @@ src/altcorr_kernel.cu
 src/correlation_kernels.cu
 src/droid.cpp
 src/droid_kernels.cu
+thirdparty/lietorch/lietorch/src/lietorch.cpp
+thirdparty/lietorch/lietorch/src/lietorch_cpu.cpp
+thirdparty/lietorch/lietorch/src/lietorch_gpu.cu

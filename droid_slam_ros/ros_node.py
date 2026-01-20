@@ -75,6 +75,7 @@ class DroidNode(Node):
         self.declare_parameter('backend_nms', 3)
         self.declare_parameter('reconstruction_path', '')
         self.declare_parameter('datapath', '/tmp')
+        self.declare_parameter('storage_path', '')
 
         # Create args object to mimic argparse namespace
         class DroidArgs:
@@ -116,6 +117,7 @@ class DroidNode(Node):
         self.args.backend_nms = self.get_parameter('backend_nms').get_parameter_value().integer_value
         self.args.reconstruction_path = self.get_parameter('reconstruction_path').get_parameter_value().string_value
         self.args.datapath = self.get_parameter('datapath').get_parameter_value().string_value
+        self.output_folder = self.get_parameter('storage_path').get_parameter_value().string_value
         
         self.args.stereo = True
         
@@ -144,14 +146,12 @@ class DroidNode(Node):
         self.intr_sub_right = self.create_subscription(CameraInfo, '/zedx/right/camera_info', self.cam_intr_right_cb, 1)
 
         self.image_counter = 0
-        self.output_folder_ = '/home/mbo/legs_ws/output_images'
-        self.json_file_path_ = os.path.join(self.output_folder_, 'transforms.json')
-        if not os.path.exists(self.output_folder_):
-            os.makedirs(self.output_folder_)            
+        if not os.path.exists(self.output_folder):
+            os.makedirs(self.output_folder)            
 
         self.cam_params = {}
         self.bridge = CvBridge()
-        self.baseline = None
+        self.baseline = None # TODO baseline is actually hardcoded in DROID-SLAM
 
     def cam_intr_left_cb(self, msg):
         if 'w' in self.cam_params:
@@ -278,7 +278,6 @@ class DroidNode(Node):
         odom_msg.pose.pose = pose
         self.odom_publisher.publish(odom_msg)
 
-        # TODO log here the time it took to process the frame
         process_time = time.time() - start_time
         self.get_logger().info(f"Processed frame {self.image_counter} in {process_time:.4f}s")
 
@@ -317,25 +316,28 @@ class DroidNode(Node):
         
         # Update poses
         video = self.droid.video
-        poses = video.poses[:video.counter.value].cpu().numpy()
+        poses_w2c = video.poses[:video.counter.value].cpu().numpy()
         tstamps = video.tstamp[:video.counter.value].cpu().numpy()
         
-        # Save Trajectory (TUM Format)
-        traj_path = os.path.join(self.output_folder_, 'stamped_traj_estimate.txt')
+        # Calculate C2W poses for trajectory file (to match demo.py output)
+        poses_c2w = SE3(video.poses[:video.counter.value]).inv().data.cpu().numpy()
+        
+        # Save Trajectory (TUM Format) using C2W poses
+        traj_path = os.path.join(self.output_folder, 'trajectory.txt')
         self.get_logger().info(f"Saving trajectory to {traj_path}...")
         with open(traj_path, 'w') as f:
-            for i in range(len(poses)):
+            for i in range(len(poses_c2w)):
                 # pose is [tx, ty, tz, qx, qy, qz, qw]
-                p = poses[i]
+                p = poses_c2w[i]
                 timestamp = tstamps[i]
                 f.write(f"{timestamp} {p[0]} {p[1]} {p[2]} {p[3]} {p[4]} {p[5]} {p[6]}\n")
         
 
         # Save .pth
-        self.save_reconstruction(os.path.join(self.output_folder_, 'reconstruction.pth'))
+        self.save_reconstruction(os.path.join(self.output_folder, 'reconstruction.pth'))
 
         # # TODO Save .ply
-        # ply_path = os.path.join(self.output_folder_, 'reconstruction.ply')
+        # ply_path = os.path.join(self.output_folder, 'reconstruction.ply')
 
         self.get_logger().info("Save complete.")
 

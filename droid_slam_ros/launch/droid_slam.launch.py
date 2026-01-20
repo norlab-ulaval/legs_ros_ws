@@ -17,19 +17,23 @@ def generate_launch_description():
     return LaunchDescription([
         # Keep weights argument for easy override
         DeclareLaunchArgument('weights', default_value=default_weights, description='Path to model weights'),
-        
+        DeclareLaunchArgument('use_sim_time', default_value='true', description='Use simulation time'),
+
         Node(
             package='droid_slam_ros',
             executable='ros_node.py',
             name='droid_node',
             namespace=os.getenv('NAMESPACE', ''),
             output="screen",
-            sigterm_timeout="60",  # Wait 60 seconds before escalating to SIGTERM
+            sigterm_timeout="240",  # Wait 60 seconds before escalating to SIGTERM
             sigkill_timeout="10",  # Wait 10 more seconds before SIGKILL
             parameters=[
                 config_file,
-                {'weights': LaunchConfiguration('weights')}, # Override weights from launch arg
-                {'stereo': True} # Enforce stereo
+                {
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                'storage_path': os.getenv('STORAGE_PATH', '/home/mbo/legs_ws/output'),
+                'weights': LaunchConfiguration('weights'), # Override weights from launch arg
+                'stereo': True} # Enforce stereo
             ]
         )
     ])
