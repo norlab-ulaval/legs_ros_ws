@@ -10,14 +10,35 @@ from scipy.spatial.transform import Rotation as R
 import os
 from ament_index_python.packages import get_package_share_directory
 
-# Add droid_slam to path
+# Define paths
+DROID_SLAM_ROOT = '/opt/DROID-SLAM'
+DROID_SLAM_LIB  = os.path.join(DROID_SLAM_ROOT, 'droid_slam')
+
+if os.path.exists(DROID_SLAM_ROOT):
+    # 1. Add ROOT to path (so 'droid_backends' .so file can be found)
+    sys.path.insert(0, DROID_SLAM_ROOT)
+    
+    # 2. Add LIB folder to path (so 'droid_net', 'depth_video' etc. can be found)
+    # This fixes the "No module named droid_net" error
+    sys.path.insert(0, DROID_SLAM_LIB)
+    
+    print(f"Force-loaded DROID-SLAM from: {DROID_SLAM_ROOT}")
+else:
+    print(f"WARNING: {DROID_SLAM_ROOT} not found")
+    # ... fallback logic ...
+
+# ...
+
 try:
-    share_dir = get_package_share_directory('droid_slam_ros')
-    sys.path.append(share_dir)
-    sys.path.append(os.path.join(share_dir, 'droid_slam'))
-except Exception as e:
-    print(f"Could not find share directory: {e}")
-    sys.path.append('droid_slam') # Fallback for local run
+    # 3. Import DIRECTLY from 'droid', not 'droid_slam.droid'
+    # Because we added the inner folder to sys.path, 'droid' is now a top-level module.
+    # This also prevents Python from accidentally grabbing the version in /ros2_ws/src/...
+    from droid import Droid
+    print("Successfully imported 'Droid' class")
+
+except ImportError as e:
+    print(f"Failed to import Droid: {e}")
+    raise e
 
 from PIL import Image as PILImage
 
@@ -33,7 +54,6 @@ import rclpy
 import json
 from sensor_msgs.msg import Image as ROSImage
 import message_filters
-from droid import Droid
 import torch.nn.functional as F
 
 import tf2_ros
@@ -196,19 +216,19 @@ class DroidNode(Node):
 
     def image_callback(self, left_msg, right_msg):
         start_time = time.time()
-        # Get baseline from TF if not already set
-        if self.baseline is None:
-            try:
-                trans = self.tf_buffer.lookup_transform('zedx_left', 'zedx_right', rclpy.time.Time())
-                # Baseline is typically the Euclidean distance, mainly along -x in camera frame for right cam
-                # But here we just need the magnitude if we are converting disparity/stereo
-                # Wait, DroidSLAM expects stereo pairs. We need the intrinsics [fx, fy, cx, cy]
-                # and usually assumes rectified stereo with horizontal baseline.
-                self.baseline = abs(trans.transform.translation.x) 
-                self.get_logger().info(f"Baseline found: {self.baseline}")
-            except Exception as e:
-                self.get_logger().error(f"Could not get baseline: {e}")
-                return
+        # # Get baseline from TF if not already set
+        # if self.baseline is None:
+        #     try:
+        #         trans = self.tf_buffer.lookup_transform('zedx_left', 'zedx_right', rclpy.time.Time())
+        #         # Baseline is typically the Euclidean distance, mainly along -x in camera frame for right cam
+        #         # But here we just need the magnitude if we are converting disparity/stereo
+        #         # Wait, DroidSLAM expects stereo pairs. We need the intrinsics [fx, fy, cx, cy]
+        #         # and usually assumes rectified stereo with horizontal baseline.
+        #         self.baseline = abs(trans.transform.translation.x) 
+        #         self.get_logger().info(f"Baseline found: {self.baseline}")
+        #     except Exception as e:
+        #         self.get_logger().error(f"Could not get baseline: {e}")
+        #         return
 
         if self.cam_params.get("left") is None or self.cam_params.get("right") is None:
             self.get_logger().info("Waiting for camera info", once=True)
