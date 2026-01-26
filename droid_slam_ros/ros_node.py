@@ -114,10 +114,6 @@ class DroidNode(Node):
         self.args.image_size = self.get_parameter('image_size').get_parameter_value().integer_array_value
         if hasattr(self.args.image_size, 'tolist'):
              self.args.image_size = self.args.image_size.tolist()
-        
-        # If empty (shouldn't be due to default), fallback
-        if not self.args.image_size:
-            self.args.image_size = [344, 560]
 
         self.args.disable_vis = self.get_parameter('disable_vis').get_parameter_value().bool_value
         self.args.buffer = self.get_parameter('buffer').get_parameter_value().integer_value
@@ -248,8 +244,8 @@ class DroidNode(Node):
         # Prepare inputs for Droid
 
         h0, w0, _ = cv_left.shape
-        h1 = int(h0 * np.sqrt((384 * 512) / (h0 * w0)))
-        w1 = int(w0 * np.sqrt((384 * 512) / (h0 * w0)))
+        h1 = self.args.image_size[0]
+        w1 = self.args.image_size[1]
 
         cv_left = cv2.resize(cv_left, (w1, h1))
         cv_left = cv_left[:h1-h1%8, :w1-w1%8]
