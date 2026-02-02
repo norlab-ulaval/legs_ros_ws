@@ -1,3 +1,3 @@
 [submodule "droid_slam_ros/droid-slam"]
 	path = droid_slam_ros/droid-slam
-	url = git@github.com:norlab-ulaval/DROID-SLAM.git
+	url = https://github.com/norlab-ulaval/DROID-SLAM.git
