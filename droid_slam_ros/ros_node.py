@@ -11,32 +11,47 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 # Define paths
-DROID_SLAM_ROOT = '/opt/DROID-SLAM'
-DROID_SLAM_LIB  = os.path.join(DROID_SLAM_ROOT, 'droid_slam')
+try:
+    share_dir = get_package_share_directory('droid_slam_ros')
+except Exception as e:
+    print(f"Could not find share directory: {e}")
+    share_dir = os.getcwd()
 
-if os.path.exists(DROID_SLAM_ROOT):
+# Search for droid-slam directory (hyphen or underscore)
+candidate_roots = [
+    os.path.join(share_dir, 'droid-slam'), # Expected in installed share or local
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'droid-slam'), # Relative to script
+    'droid-slam', # Relative to CWD
+    'droid_slam'
+]
+
+DROID_SLAM_ROOT = None
+for root in candidate_roots:
+    if os.path.isdir(root) and os.path.isdir(os.path.join(root, 'droid_slam')):
+        DROID_SLAM_ROOT = os.path.abspath(root)
+        break
+
+if DROID_SLAM_ROOT:
+    DROID_SLAM_LIB = os.path.join(DROID_SLAM_ROOT, 'droid_slam')
+    
     # 1. Add ROOT to path (so 'droid_backends' .so file can be found)
-    sys.path.insert(0, DROID_SLAM_ROOT)
+    if DROID_SLAM_ROOT not in sys.path:
+        sys.path.insert(0, DROID_SLAM_ROOT)
     
     # 2. Add LIB folder to path (so 'droid_net', 'depth_video' etc. can be found)
-    # This fixes the "No module named droid_net" error
-    sys.path.insert(0, DROID_SLAM_LIB)
+    if DROID_SLAM_LIB not in sys.path:
+        sys.path.insert(0, DROID_SLAM_LIB)
     
     print(f"Force-loaded DROID-SLAM from: {DROID_SLAM_ROOT}")
 else:
-    print(f"WARNING: {DROID_SLAM_ROOT} not found")
-    # ... fallback logic ...
-
-# ...
+    print(f"WARNING: DROID-SLAM source not found. Checked: {candidate_roots}")
 
 try:
     # 3. Import DIRECTLY from 'droid', not 'droid_slam.droid'
     # Because we added the inner folder to sys.path, 'droid' is now a top-level module.
-    # This also prevents Python from accidentally grabbing the version in /ros2_ws/src/...
     from droid import Droid
     print("Successfully imported 'Droid' class")
-
-except ImportError as e:
+except (ModuleNotFoundError, ImportError) as e:
     print(f"Failed to import Droid: {e}")
     raise e
 

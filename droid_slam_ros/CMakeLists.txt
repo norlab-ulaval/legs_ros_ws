@@ -43,7 +43,7 @@ install(PROGRAMS
 )
 
 install(DIRECTORY
-  droid_slam
+  droid-slam
   DESTINATION share/${PROJECT_NAME}
 )
 
