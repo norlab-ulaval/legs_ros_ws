@@ -234,7 +234,7 @@ class DroidNode(Node):
         cv_left = self.bridge.imgmsg_to_cv2(left_msg, desired_encoding='bgr8')
         cv_right = self.bridge.imgmsg_to_cv2(right_msg, desired_encoding='bgr8')
         
-        t = left_msg.header.stamp.sec + left_msg.header.stamp.nanosec * 1e-9
+        timestamp = left_msg.header.stamp.sec + left_msg.header.stamp.nanosec * 1e-9
 
         # Undistort images
 
@@ -268,7 +268,7 @@ class DroidNode(Node):
 
 
 
-        self.droid.track(t, stereo_image, depth=None, intrinsics=intrinsics)
+        self.droid.track(timestamp, stereo_image, depth=None, intrinsics=intrinsics)
 
         if self.droid.video.counter.value == self.image_counter:
             return
@@ -332,7 +332,6 @@ class DroidNode(Node):
         
         # Update poses
         video = self.droid.video
-        poses_w2c = video.poses[:video.counter.value].cpu().numpy()
         tstamps = video.tstamp[:video.counter.value].cpu().numpy()
         
         # Calculate C2W poses for trajectory file (to match demo.py output)
