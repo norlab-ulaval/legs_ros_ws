@@ -217,8 +217,8 @@ __global__ void projective_transform_kernel(
 
   // stereo frames
   if (ix == jx) {
-    if (thread_id == 0) {
-      tij[0] =  -0.1;
+      float b = intrinsics[4];
+      tij[0] =  -b;
       tij[1] =     0;
       tij[2] =     0;
       qij[0] =     0;

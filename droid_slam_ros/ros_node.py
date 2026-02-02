@@ -229,18 +229,14 @@ class DroidNode(Node):
     def image_callback(self, left_msg, right_msg):
         start_time = time.time()
         # # Get baseline from TF if not already set
-        # if self.baseline is None:
-        #     try:
-        #         trans = self.tf_buffer.lookup_transform('zedx_left', 'zedx_right', rclpy.time.Time())
-        #         # Baseline is typically the Euclidean distance, mainly along -x in camera frame for right cam
-        #         # But here we just need the magnitude if we are converting disparity/stereo
-        #         # Wait, DroidSLAM expects stereo pairs. We need the intrinsics [fx, fy, cx, cy]
-        #         # and usually assumes rectified stereo with horizontal baseline.
-        #         self.baseline = abs(trans.transform.translation.x) 
-        #         self.get_logger().info(f"Baseline found: {self.baseline}")
-        #     except Exception as e:
-        #         self.get_logger().error(f"Could not get baseline: {e}")
-        #         return
+        if self.baseline is None:
+            self.baseline = 0.1 # Default fallback
+            try:
+                trans = self.tf_buffer.lookup_transform('zedx_left', 'zedx_right', rclpy.time.Time())
+                self.baseline = abs(trans.transform.translation.x) 
+                self.get_logger().info(f"Baseline found: {self.baseline}")
+            except Exception as e:
+                self.get_logger().error(f"Could not get baseline: {e}")
 
         if self.cam_params.get("left") is None or self.cam_params.get("right") is None:
             self.get_logger().info("Waiting for camera info", once=True)
@@ -277,10 +273,10 @@ class DroidNode(Node):
         K_l = self.cam_params['left']['K']
         fx, fy, cx, cy = K_l[0,0], K_l[1,1], K_l[0,2], K_l[1,2]
         intrinsics = torch.as_tensor([
-            fx, fy, cx, cy
+            fx, fy, cx, cy, self.baseline
         ])
-        intrinsics[0::2] *= (w1 / w0)
-        intrinsics[1::2] *= (h1 / h0)
+        intrinsics[0:4:2] *= (w1 / w0)
+        intrinsics[1:4:2] *= (h1 / h0)
 
 
 
