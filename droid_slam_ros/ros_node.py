@@ -6,6 +6,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from cv_bridge import CvBridge  # Needed for converting between ROS Image messages and OpenCV images
 import sys
+import signal
 from scipy.spatial.transform import Rotation as R
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -331,14 +332,16 @@ class DroidNode(Node):
         self.get_logger().info(f"Saved .pth to {save_path}")
 
     def shutdown(self):
-        self.get_logger().info("Starting reconstruction save...")
+        # Ignore SIGINT to ensure shutdown completes
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        print("Starting reconstruction save... (SIGINT/Ctrl+C is now ignored)")
         if self.droid is None:
             return
 
         # terminate droid
         del self.droid.frontend
         # Global Bundle Adjustment
-        self.get_logger().info("Performing Global BA...")
+        print("Performing Global BA...")
         torch.cuda.empty_cache()
         self.droid.backend(7)
 
@@ -354,7 +357,7 @@ class DroidNode(Node):
         
         # Save Trajectory (TUM Format) using C2W poses
         traj_path = os.path.join(self.output_folder, 'trajectory.txt')
-        self.get_logger().info(f"Saving trajectory to {traj_path}...")
+        print(f"Saving trajectory to {traj_path}...")
         with open(traj_path, 'w') as f:
             for i in range(len(poses_c2w)):
                 # pose is [tx, ty, tz, qx, qy, qz, qw]
@@ -369,7 +372,7 @@ class DroidNode(Node):
         # # TODO Save .ply
         # ply_path = os.path.join(self.output_folder, 'reconstruction.ply')
 
-        self.get_logger().info("Save complete.")
+        print("Save complete.")
 
 
 def main(mainargs=None):
