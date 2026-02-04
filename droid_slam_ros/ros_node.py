@@ -173,7 +173,6 @@ class DroidNode(Node):
         self.ts = message_filters.TimeSynchronizer([self.left_rect_sub, self.right_rect_sub], 10)
         self.ts.registerCallback(self.image_callback)
         
-        # TODO add right camera info subscription
         self.intr_sub_left = self.create_subscription(CameraInfo, '/zedx/left/camera_info', self.cam_intr_left_cb, 1)
         self.intr_sub_right = self.create_subscription(CameraInfo, '/zedx/right/camera_info', self.cam_intr_right_cb, 1)
 
@@ -183,7 +182,7 @@ class DroidNode(Node):
 
         self.cam_params = {}
         self.bridge = CvBridge()
-        self.baseline = None # TODO baseline is actually hardcoded in DROID-SLAM
+        self.baseline = None
 
     def cam_intr_left_cb(self, msg):
         if 'w' in self.cam_params:
@@ -198,7 +197,6 @@ class DroidNode(Node):
         }
         self.frames = []
         self.cam_params["left"] = params
-        # TODO log here
         self.get_logger().info("Received Left Camera Info", once=True)
 
     def cam_intr_right_cb(self, msg):
@@ -213,7 +211,6 @@ class DroidNode(Node):
             "D": np.array(msg.d),
         }
         self.cam_params["right"] = params
-        # TODO log here
         self.get_logger().info("Received Right Camera Info", once=True)
 
     def xyzquat2mat(self, vec):
@@ -228,15 +225,19 @@ class DroidNode(Node):
 
     def image_callback(self, left_msg, right_msg):
         start_time = time.time()
-        # # Get baseline from TF if not already set
+        # Get baseline from TF if not already set
+        # We are getting better results with the default baseline (0.1 m)
+        # and rescaling afterwards
+        self.baseline = 0.1
         if self.baseline is None:
-            self.baseline = 0.1 # Default fallback
             try:
-                trans = self.tf_buffer.lookup_transform('zedx_left', 'zedx_right', rclpy.time.Time())
-                self.baseline = abs(trans.transform.translation.x) 
+                from rclpy.duration import Duration
+                trans = self.tf_buffer.lookup_transform('zedx_left', 'zedx_right', left_msg.header.stamp, timeout=Duration(seconds=0.1))
+                self.baseline = 0.1 / abs(trans.transform.translation.x) 
                 self.get_logger().info(f"Baseline found: {self.baseline}")
             except Exception as e:
                 self.get_logger().error(f"Could not get baseline: {e}")
+                return
 
         if self.cam_params.get("left") is None or self.cam_params.get("right") is None:
             self.get_logger().info("Waiting for camera info", once=True)
@@ -369,6 +370,38 @@ class DroidNode(Node):
         # ply_path = os.path.join(self.output_folder, 'reconstruction.ply')
 
         print("Save complete.")
+
+        # Save confidence maps
+        # if hasattr(self.droid.backend, 'graph') and self.droid.backend.graph is not None:
+        #     print("Saving confidence maps...")
+        #     graph = self.droid.backend.graph
+        #     if graph.weight.shape[1] > 0:
+        #         weights = graph.weight.cpu().numpy() # [1, N, ht, wd, 2]
+        #         ii = graph.ii.cpu().numpy()
+        #         jj = graph.jj.cpu().numpy()
+                
+        #         weight_dir = os.path.join(self.output_folder, 'weights')
+        #         if not os.path.exists(weight_dir):
+        #             os.makedirs(weight_dir)
+                
+        #         print(f"Saving {weights.shape[1]} confidence maps to {weight_dir}...")
+        #         for k in range(weights.shape[1]):
+        #             w = weights[0, k] # [ht, wd, 2]
+        #             w_mean = np.mean(w, axis=-1) # [ht, wd]
+                    
+        #             # Sigmoid output is 0-1. Scale to 0-255.
+        #             w_img = (w_mean * 255).astype(np.uint8)
+        #             w_color = cv2.applyColorMap(w_img, cv2.COLORMAP_JET)
+                    
+        #             # Upsample to match original image ratio (x8)
+        #             # Although original images are not stored here easily, we can just save it.
+        #             # w_color = cv2.resize(w_color, (w_color.shape[1]*8, w_color.shape[0]*8), interpolation=cv2.INTER_LINEAR)
+
+        #             fname = os.path.join(weight_dir, f"{ii[k]:05d}_{jj[k]:05d}.png")
+        #             cv2.imwrite(fname, w_img)
+        #         print("Confidence maps saved.")
+        #     else:
+        #         print("No weights found in graph.")
 
 
 def main(mainargs=None):
