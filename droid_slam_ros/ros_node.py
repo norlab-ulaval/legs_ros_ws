@@ -371,37 +371,37 @@ class DroidNode(Node):
 
         print("Save complete.")
 
-        # Save confidence maps
-        # if hasattr(self.droid.backend, 'graph') and self.droid.backend.graph is not None:
-        #     print("Saving confidence maps...")
-        #     graph = self.droid.backend.graph
-        #     if graph.weight.shape[1] > 0:
-        #         weights = graph.weight.cpu().numpy() # [1, N, ht, wd, 2]
-        #         ii = graph.ii.cpu().numpy()
-        #         jj = graph.jj.cpu().numpy()
+        Save confidence maps
+        if hasattr(self.droid.backend, 'graph') and self.droid.backend.graph is not None:
+            print("Saving confidence maps...")
+            graph = self.droid.backend.graph
+            if graph.weight.shape[1] > 0:
+                weights = graph.weight.cpu().numpy() # [1, N, ht, wd, 2]
+                ii = graph.ii.cpu().numpy()
+                jj = graph.jj.cpu().numpy()
                 
-        #         weight_dir = os.path.join(self.output_folder, 'weights')
-        #         if not os.path.exists(weight_dir):
-        #             os.makedirs(weight_dir)
+                weight_dir = os.path.join(self.output_folder, 'weights')
+                if not os.path.exists(weight_dir):
+                    os.makedirs(weight_dir)
                 
-        #         print(f"Saving {weights.shape[1]} confidence maps to {weight_dir}...")
-        #         for k in range(weights.shape[1]):
-        #             w = weights[0, k] # [ht, wd, 2]
-        #             w_mean = np.mean(w, axis=-1) # [ht, wd]
+                print(f"Saving {weights.shape[1]} confidence maps to {weight_dir}...")
+                for k in range(weights.shape[1]):
+                    w = weights[0, k] # [ht, wd, 2]
+                    w_mean = np.mean(w, axis=-1) # [ht, wd]
                     
-        #             # Sigmoid output is 0-1. Scale to 0-255.
-        #             w_img = (w_mean * 255).astype(np.uint8)
-        #             w_color = cv2.applyColorMap(w_img, cv2.COLORMAP_JET)
+                    # Sigmoid output is 0-1. Scale to 0-255.
+                    w_img = (w_mean * 255).astype(np.uint8)
+                    w_color = cv2.applyColorMap(w_img, cv2.COLORMAP_JET)
                     
-        #             # Upsample to match original image ratio (x8)
-        #             # Although original images are not stored here easily, we can just save it.
-        #             # w_color = cv2.resize(w_color, (w_color.shape[1]*8, w_color.shape[0]*8), interpolation=cv2.INTER_LINEAR)
+                    # Upsample to match original image ratio (x8)
+                    # Although original images are not stored here easily, we can just save it.
+                    # w_color = cv2.resize(w_color, (w_color.shape[1]*8, w_color.shape[0]*8), interpolation=cv2.INTER_LINEAR)
 
-        #             fname = os.path.join(weight_dir, f"{ii[k]:05d}_{jj[k]:05d}.png")
-        #             cv2.imwrite(fname, w_img)
-        #         print("Confidence maps saved.")
-        #     else:
-        #         print("No weights found in graph.")
+                    fname = os.path.join(weight_dir, f"{ii[k]:05d}_{jj[k]:05d}.png")
+                    cv2.imwrite(fname, w_img)
+                print("Confidence maps saved.")
+            else:
+                print("No weights found in graph.")
 
 
 def main(mainargs=None):
